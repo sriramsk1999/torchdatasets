@@ -37,10 +37,10 @@ except ImportError:
 
 try:
     from torch.utils.data import _typing    
-    class MetaIterableWrapper(MetaIterable, GenericMeta, _typing._DataPipeMeta): pass
+    class MetaIterableWrapper(MetaIterable, GenericMeta, _typing._DataPipeMeta, abc.ABCMeta): pass
 except ImportError:
     # for pytorch < 1.9 _typing does not exist
-    class MetaIterableWrapper(MetaIterable): pass
+    class MetaIterableWrapper(MetaIterable, abc.ABCMeta): pass
 
 
 class _DatasetBase(Base):
