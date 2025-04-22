@@ -22,6 +22,8 @@ import typing
 from typing import Optional
 
 import torch
+import h5py
+import numpy as np
 
 from ._base import Base
 
@@ -314,6 +316,96 @@ class Tensor(Cacher):
         Behaves just like `shutil.rmtree`, but won't act if directory does not exist.
         """
 
+        if self.path.is_dir():
+            shutil.rmtree(self.path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.clean()
+
+
+class HDF5(Cacher):
+    r"""**Save and load data from disk using HDF5 format via h5py library.**
+
+    Data will be saved as HDF5 files with compression, resulting in significant space savings
+    compared to pickle files, especially for numerical data.
+
+    **This object can be used as a** `context manager` **to automatically clean up**::
+
+        with td.cachers.HDF5(pathlib.Path("./cache")) as h5cacher:
+            dataset = dataset.map(lambda x: x+1).cache(h5cacher)
+            ... # Do something with dataset
+        ... # Folder removed
+
+    Attributes
+    ----------
+    path: pathlib.Path
+            Path to the folder where samples will be saved and loaded from.
+    compression: str or None
+            Compression filter to use. Options include 'gzip', 'lzf', or None.
+            Default: 'gzip'
+    compression_opts: int or None
+            Compression settings. For 'gzip', this is an integer from 0-9.
+            Default: 4
+    """
+
+    def __init__(
+        self,
+        path: pathlib.Path,
+        compression: Optional[str] = 'gzip',
+        compression_opts: Optional[int] = 4
+    ):
+        self.h5py = h5py
+        self.np = np
+        self.path = path
+        self.path.mkdir(parents=True, exist_ok=True)
+        self.extension = ".h5"
+        self.compression = compression
+        self.compression_opts = compression_opts
+
+    def __contains__(self, index: int) -> bool:
+        """**Check whether file exists on disk.**"""
+        return pathlib.Path(
+            (self.path / str(index)).with_suffix(self.extension)
+        ).is_file()
+
+    def __setitem__(self, index: int, data: typing.Any):
+        """**Save data in specified folder using HDF5.**"""
+        assert isinstance(data, dict)
+        file_path = (self.path / str(index)).with_suffix(self.extension)
+
+        with self.h5py.File(file_path, 'w') as hf:
+            for key, value in data.items():
+                if isinstance(value, (str, int, float)):
+                    dset = hf.create_dataset(key, data=value)
+                elif isinstance(value, (torch.Tensor, np.ndarray)):
+                    dset = hf.create_dataset(
+                        key,
+                        data=value,
+                        compression=self.compression,
+                        compression_opts=self.compression_opts if self.compression == 'gzip' else None
+                    )
+                else:
+                    raise ValueError(f"Unsupported type - {type(value)} for {key}")
+
+    def __getitem__(self, index: int):
+        """**Retrieve data specified by index.**"""
+        file_path = (self.path / str(index)).with_suffix(self.extension)
+        data = {}
+
+        with self.h5py.File(file_path, 'r') as hf:
+            for key in hf.keys():
+                item = hf[key][()]
+                if isinstance(item, bytes):
+                    data[key] = item.decode("utf-8")
+                else:
+                    data[key] = item
+        return data
+
+    def clean(self) -> None:
+        """**Remove recursively folder** `self.path`."""
         if self.path.is_dir():
             shutil.rmtree(self.path)
 
