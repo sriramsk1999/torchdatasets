@@ -24,6 +24,7 @@ from typing import Optional
 import torch
 import h5py
 import numpy as np
+import random
 
 from ._base import Base
 
@@ -414,3 +415,108 @@ class HDF5(Cacher):
 
     def __exit__(self, *args):
         self.clean()
+
+class ProbabilisticCacherWrapper:
+    r"""**Wrapper that adds probabilistic cache invalidation to any cacher.**
+
+    This wrapper adds the ability to probabilistically invalidate cached items,
+    forcing them to be regenerated. This is particularly useful when combining
+    caching with data augmentation - it allows different augmentations to be
+    applied to the same sample across epochs while still maintaining most of
+    the caching benefits.
+
+    **This wrapper can be used with any cacher that implements the Cacher interface:**
+
+    .. code-block:: python
+
+        import torchdatasets as td
+        import pathlib
+
+        # Create base cacher
+        base_cacher = td.cachers.HDF5(pathlib.Path("./cache"))
+
+        # Wrap with probabilistic invalidation
+        cacher = ProbabilisticCacherWrapper(base_cacher, invalidation_rate=0.1)
+
+        # Use with dataset
+        dataset = dataset.cache(cacher)
+
+    The wrapper maintains its own random number generator to ensure consistent
+    behavior across multiple runs when a seed is provided, while not interfering
+    with the global random state used for other operations like augmentation.
+
+    .. note::
+
+        The invalidation pattern will naturally vary between epochs in typical
+        training setups due to shuffling. If you use deterministic sampling
+        (no shuffling) and want different invalidation patterns per epoch,
+        you may need a more sophisticated approach.
+
+    Attributes
+    ----------
+    base_cacher : Cacher
+        The underlying cacher to wrap (e.g., Memory, Pickle, HDF5)
+    invalidation_rate : float
+        Probability (0-1) of invalidating a cached item. Default: 0.1
+    rng : random.Random
+        Separate random number generator for invalidation decisions
+
+    Parameters
+    ----------
+    base_cacher : Cacher
+        Any object implementing the Cacher interface
+    invalidation_rate : float, optional
+        Probability (0-1) of invalidating cached items. Higher values mean
+        more regeneration and thus more augmentation variety but less caching
+        benefit. Default: 0.1 (10%)
+    seed : int, optional
+        Seed for the internal random number generator. If None, uses system
+        entropy. Provide a seed for reproducible invalidation patterns.
+        Default: None
+
+    Examples
+    --------
+    >>> # Basic usage with HDF5 cacher
+    >>> h5_cacher = td.cachers.HDF5(pathlib.Path("./cache"))
+    >>> wrapped = ProbabilisticCacherWrapper(h5_cacher, invalidation_rate=0.05)
+    >>> dataset = dataset.cache(wrapped)
+
+    >>> # Reproducible invalidation with seed
+    >>> lightning.seed_everything(42)
+    >>> cacher = ProbabilisticCacherWrapper(h5_cacher, seed=42)
+
+    >>> # Using as context manager
+    >>> with ProbabilisticCacherWrapper(h5_cacher) as cacher:
+    ...     dataset = dataset.cache(cacher)
+    ...     # Training loop here
+    >>> # Cache cleaned up automatically
+
+    """
+    def __init__(self, base_cacher, invalidation_rate=0.1, seed=None):
+        self.base_cacher = base_cacher
+        self.invalidation_rate = invalidation_rate
+        self.rng = random.Random(seed)  # Separate RNG for reproducibility
+
+    def __contains__(self, index):
+        # Item is not cached OR we decide to invalidate it
+        if not self.base_cacher.__contains__(index):
+            return False
+
+        # Probabilistically invalidate cached items
+        return self.rng.random() > self.invalidation_rate
+
+    def __setitem__(self, index, data):
+        self.base_cacher.__setitem__(index, data)
+
+    def __getitem__(self, index):
+        return self.base_cacher.__getitem__(index)
+
+    def __getattr__(self, name):
+        return getattr(self.base_cacher, name)
+
+    def __enter__(self):
+        self.base_cacher.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        self.base_cacher.__exit__(*args)
